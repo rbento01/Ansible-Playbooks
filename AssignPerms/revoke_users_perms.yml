@@ -1,0 +1,72 @@
+- name: Revoke a Proxmox role from an user  # Playbook name: revoke roles from a Proxmox user
+  hosts: localhost                       # Runs locally on the Ansible control node
+  connection: local                      # No SSH, only local connection
+  gather_facts: no                       # Skip fact gathering (not needed)
+
+  vars:                                  # Variables for API access
+    api_host: "172.16.30.149"            # Proxmox server address
+    api_user: "root@pam"                 # API user
+    api_token_id: "ansible"              # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+
+  vars_prompt:                           # Ask user for runtime input
+    - name: "target_user"
+      prompt: "Enter the Proxmox username to assign permissions (e.g., user1@pve)"  # User to revoke perms from
+      private: no
+
+    - name: "target_path"
+      prompt: "Enter the path where the permission should be applied (e.g., /)"     # Path where ACL applies
+      private: no
+      default: "/"                       # Default is root path
+
+  tasks:
+    - name: Get ACL entries for the target user
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/acl"   # API call: list ACLs
+        method: GET                                               # Use GET request
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Auth via API token
+        validate_certs: no                                        # Skip SSL cert check
+        return_content: yes                                       # Return full response JSON
+      register: acl_check                                         # Save response as acl_check
+
+    - name: Set roles to remove for the user
+      # | selectattr('ugid', 'equalto', target_user)          # Filter ACLs matching the user
+      # | selectattr('path', 'equalto', target_path)          # Filter ACLs at the target path
+      # | map(attribute='roleid')                             # Extract the role IDs
+      # | list                                                # Convert to list
+      set_fact:
+        user_roles_to_remove: >-                                  # Create list of roles to revoke
+          {{
+            acl_check.json.data
+            | selectattr('ugid', 'equalto', target_user)          
+            | selectattr('path', 'equalto', target_path)          
+            | map(attribute='roleid')                            
+            | list                                                
+          }}
+
+    - name: Remove all roles for the user at the path
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/acl/"  # API endpoint to modify ACLs
+        method: PUT                                               # PUT = update ACLs
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Auth
+          Content-Type: "application/json"
+        body_format: json
+        body:                                                     # Request body
+          path: "{{ target_path }}"                               # Path where roles are revoked
+          users:
+            - "{{ target_user }}"                                 # Apply to this user
+          roles: "{{ item }}"                                     # Role to revoke (iterates in loop)
+          delete: 1                                               # Delete flag = revoke
+        validate_certs: no                                        # Ignore SSL validation
+      loop: "{{ user_roles_to_remove }}"                          # Loop over all roles to remove
+      when: user_roles_to_remove | length > 0                     # Only run if roles exist
+      register: revoke_results                                    # Save response for results
+
+    - name: Permission revocation result
+      debug:
+        msg: >-                                                   # Show user-friendly result
+          {% if revoke_results is skipped %}User '{{ target_user }}' does not exist or had no permissions at '{{ target_path }}'.
+          {% else %}Permissions successfully revoked for user '{{ target_user }}' at path '{{ target_path }}'.
+          {% endif %}

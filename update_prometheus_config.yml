@@ -1,0 +1,34 @@
+---
+- name: Update Prometheus targets
+  hosts: prometheus
+  become: yes
+  gather_facts: no
+  vars:
+    prometheus_config: /etc/prometheus/prometheus.yml
+    prometheus_service: prometheus
+
+  tasks:
+    - name: Collect Node Exporter targets
+      set_fact:
+        client_targets: "{{ groups['clients'] | map('regex_replace', '$', ':9100') | list }}"
+
+    - name: Backup Prometheus configuration
+      copy:
+        src: "{{ prometheus_config }}"
+        dest: "{{ prometheus_config }}.bak"
+        remote_src: yes
+
+    - name: Ensure Node Exporter job exists
+      blockinfile:
+        path: "{{ prometheus_config }}"
+        insertafter: '^scrape_configs:'
+        marker: "  # {mark} ANSIBLE MANAGED NODE EXPORTER JOB"
+        block: |2
+            - job_name: 'node_exporter_clients'
+              static_configs:
+                - targets: {{ client_targets }}
+
+    - name: Restart Prometheus
+      systemd:
+        name: "{{ prometheus_service }}"
+        state: restarted

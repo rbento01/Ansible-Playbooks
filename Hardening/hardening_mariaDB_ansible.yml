@@ -1,0 +1,125 @@
+---
+- name: Harden MySQL Server
+  hosts: clients  # Define the target hosts for this playbook (group 'clients')
+  become: yes  # Escalate to root privileges to perform system-level tasks
+  vars_prompt:
+    # Prompt the user for the MySQL bind IP
+    - name: "bind_ip"
+      prompt: "Enter the MySQL bind IP"
+      private: no  # This is not a sensitive value, so it won't be hidden in terminal output
+    # Prompt the user for the password of the MySQL user 'ansible'
+    - name: "ansible_mysql_password"
+      prompt: "Enter the Ansible MySQL user password"
+      private: yes  # This is sensitive, so the terminal will mask the input
+
+  tasks:
+
+    # Ensure that the MySQL configuration directory exists with correct ownership and permissions
+    - name: Ensure MySQL configuration directory exists
+      file:
+        path: /etc/mysql/conf.d  # Path to the configuration directory
+        state: directory  # Ensure the directory exists
+        owner: root   # Ownership set to root user
+        group: root   # Group ownership set to root group
+        mode: '0755'  # Set directory permissions to allow read/write/execute for owner, and read/execute for others
+
+    # Ensure that the mysqld.conf file exists (create if not) with proper permissions
+    - name: Ensure mysqld.conf exists
+      file:
+        path: /etc/mysql/conf.d/mysqld.conf  # Path to the MySQL configuration file
+        state: touch  # Create the file if it doesn't exist
+        owner: root   # Set file ownership to root user
+        group: root   # Set group ownership to root group
+        mode: '0644'  # Set permissions to readable by everyone, writable by the owner
+
+    # Configure MySQL settings with various hardening options
+    - name: Configure MySQL settings (idempotent)
+      blockinfile:
+        path: /etc/mysql/conf.d/mysqld.conf  # Path to the MySQL configuration file
+        block: |
+          [mysqld]
+          bind-address={{ bind_ip }}  # Set the bind IP address based on user input
+          local_infile=0  # Disable local file loading (prevents some SQL injection attacks)
+          symbolic-links=0  # Disable symbolic-links (prevents symlink attacks)
+          skip-symbolic-links  # Additional symbolic link protections
+          event_scheduler=OFF  # Disable the event scheduler (could be a vector for SQL injection)
+
+          sql_mode=STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION  # Enable strict SQL mode and prevent engine substitution
+          performance_schema=ON  # Enable performance schema for better diagnostics
+
+          max_connections=30  # Limit the maximum number of concurrent connections
+          max_connect_errors=50  # Limit the number of connection errors before the host is blocked
+          connect_timeout=10  # Set connection timeout to 10 seconds
+          wait_timeout=300  # Set wait timeout for idle connections to 5 minutes
+          interactive_timeout=300  # Set interactive timeout to 5 minutes
+
+          slow_query_log=ON  # Enable slow query logging
+          slow_query_log_file=/var/log/mysql/slow.log  # Path to the slow query log file
+          long_query_time=1  # Log queries that take longer than 1 second
+        owner: root  # Set file ownership to root user
+        group: root  # Set group ownership to root group
+        mode: '0644'  # Set permissions to readable by everyone, writable by the owner
+      notify: Restart MySQL  # Notify the handler to restart MySQL after changes
+
+    # Ensure the MySQL log directory exists with the correct ownership and permissions
+    - name: Ensure MySQL log directory exists
+      file:
+        path: /var/log/mysql  # Path to the log directory
+        state: directory  # Ensure this is a directory
+        owner: mysql  # Set ownership to MySQL user
+        group: mysql  # Set group ownership to MySQL group
+        mode: '0755'  # Set directory permissions to allow read/write/execute for owner, and read/execute for others
+
+    # Ensure the slow query log file exists with the correct ownership and permissions
+    - name: Ensure slow query log file exists
+      file:
+        path: /var/log/mysql/slow.log  # Path to the slow query log file
+        state: touch  # Create the file if it doesn't exist
+        owner: mysql  # Set ownership to MySQL user
+        group: mysql  # Set group ownership to MySQL group
+        mode: '0644'  # Set permissions to readable by everyone, writable by the owner
+
+    # Ensure the MySQL service is started (and will be restarted if needed)
+    - name: Ensure MySQL service is running
+      service:
+        name: mysql    # MySQL service name
+        state: started # Ensure the service is running
+
+    # Ensure the Python MySQL library is installed for interacting with MySQL from Python
+    - name: Ensure Python MySQL library is installed
+      apt:
+        name: python3-pymysql       # Python MySQL client library
+        state: present              # Ensure the package is installed
+        update_cache: yes           # Update apt package cache before installation
+    
+    - name: Ensure Ansible MySQL user exists
+      mysql_user:
+        name: ansible               # Create a user named 'ansible'
+        host: localhost             # User only allowed to connect from localhost
+        password: "{{ ansible_mysql_password }}"       # Set the password from user input
+        priv: "*.*:ALL,GRANT"       # Grant full privileges to the user on all databases
+        state: present              # Ensure the user is present
+        login_unix_socket: /var/run/mysqld/mysqld.sock # Use the local Unix socket file to connect instead of TCP (more secure & avoids needing host/port)
+
+
+    - name: Ensure MySQL root uses unix_socket plugin (idempotent)
+      mysql_user:
+        name: root                  # Target the root MySQL user
+        host: localhost             # Only apply this plugin for local root login
+        plugin: unix_socket         # Enforce login via Unix socket (more secure than password)
+        check_implicit_admin: yes   # Allows changes even if root has full privileges already
+        login_user: ansible         # Use Ansible user to authenticate while making changes
+        login_password: "{{ ansible_mysql_password }}"  # Password of Ansible MySQL user
+
+    - name: Remove unnecessary packages safely
+      apt:
+        autoremove: yes             # Automatically remove unused dependencies
+        purge: yes                  # Remove configuration files along with packages
+        state: latest               # Ensure remaining packages are up-to-date
+        update_cache: yes           # Refresh apt cache before applying changes
+
+  handlers:
+    - name: Restart MySQL
+      service:
+        name: mysql                 # Target MySQL service
+        state: restarted            # Restart MySQL whenever notified (e.g., config changes)

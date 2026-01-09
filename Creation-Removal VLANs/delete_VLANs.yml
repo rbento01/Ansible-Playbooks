@@ -1,0 +1,49 @@
+- name: Delete a Linux Bridge / VLAN on Proxmox      # Playbook name: Delete a Linux bridge or VLAN on a Proxmox node
+  hosts: localhost                                   # Run locally on the control machine
+  connection: local                                  # Local connection (no SSH)
+  gather_facts: no                                   # Skip gathering facts
+
+  vars:                                              # Proxmox API and node variables
+    api_host: "172.16.30.149"                       # Proxmox server IP
+    api_user: "root@pam"                            # Proxmox API user
+    api_token_id: "ansible"                         # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+    node: "pve"                                     # Target Proxmox node
+
+  vars_prompt:                                      # Prompt user for bridge name to delete
+    - name: bridge_name
+      prompt: "Enter the bridge name to delete (e.g., vmbr1)"  # Bridge to delete
+      private: no
+
+  tasks:
+    - name: Check if bridge exists                   # Task: retrieve current network interfaces
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ node }}/network"  # API endpoint
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authenticate
+        validate_certs: no                           # Skip SSL verification
+      register: network_interfaces                  # Store response in a variable
+
+    - name: Fail if bridge does not exist           # Task: stop playbook if bridge is not found
+      fail:
+        msg: "Bridge {{ bridge_name }} does not exist on node {{ node }}!"
+      when: bridge_name not in network_interfaces.json.data | map(attribute='iface') | list  # Check existing interfaces
+
+    - name: Delete the bridge                        # Task: send API DELETE request to remove the bridge
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ node }}/network/{{ bridge_name }}"  # API endpoint for the specific bridge
+        method: DELETE
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authenticate
+        validate_certs: no
+      register: delete_bridge                        # Save API response
+      failed_when: delete_bridge.status not in [200, 201]  # Fail if deletion unsuccessful
+
+    - name: Bring down the bridge on node            # Task: ensure the interface is down on the node
+      ansible.builtin.shell: "ifdown {{ bridge_name }} || true"  # Use shell to bring interface down, ignore errors
+      become: true                                   # Run as root
+      ignore_errors: yes                             # Continue even if interface does not exist
+
+    - debug:
+        msg: "Bridge {{ bridge_name }} deleted successfully."  # Display confirmation message

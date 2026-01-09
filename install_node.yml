@@ -1,0 +1,91 @@
+---
+- name: Deploy Node Exporter on a single host
+  hosts: localhost
+  gather_facts: no
+  become: true
+  vars_prompt:
+    - name: "target_ip"
+      prompt: "Enter the IP of the machine"
+      private: no
+    - name: "target_user"
+      prompt: "Enter the username for the machine"
+      private: no
+    - name: "target_password"
+      prompt: "Enter the password for this user"
+      private: yes
+
+  tasks:
+    - name: Add target host dynamically
+      add_host:
+        name: "{{ target_ip }}"
+        ansible_user: "{{ target_user }}"
+        ansible_ssh_pass: "{{ target_password }}"
+        groups: temp_node
+
+    - name: Add host to hosts.ini under [clients] if not present
+      lineinfile:
+        path: "./hosts.ini"
+        line: "{{ target_ip }} ansible_user={{ target_user }}"
+        insertafter: "[clients]"
+        state: present
+
+- name: Install Node Exporter on the target host
+  hosts: temp_node
+  become: yes
+  gather_facts: yes
+  vars:
+    node_exporter_version: "latest"
+    tmp_dir: "/tmp/node_exporter"
+  tasks:
+    - name: Ensure temporary directory exists
+      file:
+        path: "{{ tmp_dir }}"
+        state: directory
+
+    - name: Download Node Exporter release URL
+      shell: |
+        curl -s https://api.github.com/repos/prometheus/node_exporter/releases/latest | \
+        grep browser_download_url | grep linux-amd64 | cut -d '"' -f 4
+      register: download_url
+
+    - name: Download Node Exporter tarball
+      get_url:
+        url: "{{ download_url.stdout }}"
+        dest: "{{ tmp_dir }}/node_exporter.tar.gz"
+
+    - name: Extract Node Exporter
+      unarchive:
+        src: "{{ tmp_dir }}/node_exporter.tar.gz"
+        dest: "{{ tmp_dir }}"
+        remote_src: yes
+
+    - name: Move binary to /usr/local/bin
+      shell: mv {{ tmp_dir }}/node_exporter-*.linux-amd64/node_exporter /usr/local/bin/
+
+    - name: Ensure node_exporter user exists
+      user:
+        name: node_exporter
+        shell: /bin/false
+        system: yes
+        state: present
+
+    - name: Create systemd service for Node Exporter
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          After=network.target
+
+          [Service]
+          User=node_exporter
+          ExecStart=/usr/local/bin/node_exporter
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start Node Exporter
+      systemd:
+        name: node_exporter
+        state: started
+        enabled: yes

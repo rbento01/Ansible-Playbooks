@@ -1,0 +1,47 @@
+---
+- name: Delete a Proxmox group via API  # Playbook to remove a group in Proxmox using API calls
+  hosts: localhost                      # Run locally on the control machine
+  connection: local                     # Use local connection (no SSH)
+  gather_facts: no                      # Skip gathering system facts
+
+  vars:                                 # API connection variables
+    api_host: "172.16.30.149"           # Proxmox server IP
+    api_user: "root@pam"                # Proxmox API user
+    api_token_id: "ansible"             # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+
+  vars_prompt:                          # Prompt user for group name
+    - name: "group_name"
+      prompt: "Enter the name of the group to delete"  # Ask user which group to delete
+      private: no
+
+  tasks:
+    - name: Check if the group exists
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/groups/{{ group_name }}"  # API endpoint for specific group
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Auth header
+        validate_certs: no             # Skip SSL validation
+      register: check_group            # Save API response
+      failed_when: false               # Do not fail if group is missing (404 expected)
+
+    - name: Delete the group if it exists
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/groups/{{ group_name }}"  # API endpoint to delete group
+        method: DELETE
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authentication
+        validate_certs: no
+      when: check_group.status == 200  # Only run if group exists
+      register: delete_group_response  # Save API response
+
+    - name: Group does not exist
+      debug:
+        msg: "The group '{{ group_name }}' does not exist."  # Notify if group was not found
+      when: check_group.status != 200
+
+    - name: Confirm group deletion
+      debug:
+        msg: "Group '{{ group_name }}' successfully deleted!"  # Confirm success
+      when: check_group.status == 200

@@ -1,0 +1,56 @@
+---
+- name: Create a Proxmox group via API  # Playbook to create a group in Proxmox using API calls
+  hosts: localhost                      # Run locally on the control node
+  connection: local                     # Use local connection (no SSH)
+  gather_facts: no                      # Skip gathering system facts
+
+  vars:                                 # API connection variables
+    api_host: "172.16.30.149"           # Proxmox server IP
+    api_user: "root@pam"                # Proxmox API user
+    api_token_id: "ansible"             # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+
+  vars_prompt:                          # Prompt user for group details
+    - name: "group_name"
+      prompt: "Enter the name of the group to create"  # Ask for group ID
+      private: no
+
+    - name: "group_comment"
+      prompt: "Enter a description/comment for this group"  # Ask for description
+      private: no
+      default: ""                        # Default to empty if not provided
+
+  tasks:
+    - name: Check if the group already exists
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/groups/{{ group_name }}"  # API endpoint for specific group
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authentication header
+        validate_certs: no             # Skip SSL verification
+      register: check_group            # Save response for later use
+      failed_when: false               # Don’t fail if group does not exist (404 expected)
+
+    - name: Create the group if it does not exist
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/groups"  # API endpoint for group creation
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authentication
+        body:                           # Data for new group
+          groupid: "{{ group_name }}"
+          comment: "{{ group_comment }}"
+        body_format: json
+        validate_certs: no
+      when: check_group.status != 200   # Only run if group does not already exist
+      register: create_group_response   # Save API response
+
+    - name: Group already exists
+      debug:
+        msg: "The group '{{ group_name }}' already exists."  # Notify if group is present
+      when: check_group.status == 200
+
+    - name: Confirm group creation
+      debug:
+        msg: "Group '{{ group_name }}' successfully created!"  # Confirm success message
+      when: check_group.status != 200

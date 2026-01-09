@@ -1,0 +1,57 @@
+---
+- name: Linux Server Hardening
+  hosts: clients  # Define the target hosts for this playbook (group 'clients')
+  become: yes  # Use sudo (root privileges) for system-level tasks
+  tasks:
+
+    # ---- Package Management ----
+    # Remove the 'apport' package, which is used for error reporting (security risk)
+    - name: Remove apport
+      apt:
+        name: apport  # Package name
+        state: absent  # Ensure the package is removed
+        purge: yes  # Remove package and configuration files
+
+    # Autoremove unused packages and purge them (removes unnecessary dependencies)
+    - name: Autoremove unused packages
+      apt:
+        autoremove: yes  # Automatically remove unused packages
+        purge: yes  # Remove unused packages' configuration files
+       
+    # ---- Sysctl Configurations ----
+    # Disable IPv6 to reduce the attack surface (IPv6 is often unused but enabled by default)
+    - name: Disable IPv6
+      sysctl:
+        name: "{{ item }}"  # Iterate over the list of sysctl values
+        value: "1"  # Set the value to disable IPv6
+        state: present  # Ensure the configuration is present
+        sysctl_set: yes  # Apply the configuration immediately
+      loop:
+        - net.ipv6.conf.all.disable_ipv6
+        - net.ipv6.conf.default.disable_ipv6
+
+    # Disable IP forwarding (prevents routing between interfaces)
+    - name: Disable IP forwarding
+      sysctl:
+        name: "{{ item.name }}"  # Use name from loop items
+        value: "{{ item.value }}"  # Set value from loop items
+        state: present
+        sysctl_set: yes  # Apply the setting
+      loop:
+        - { name: "net.ipv4.ip_forward", value: "0" }
+        - { name: "net.ipv6.conf.all.forwarding", value: "0" }
+
+    # Configure kernel hardening (restrict kernel pointer info and restrict dmesg output)
+    - name: Kernel hardening parameters
+      copy:
+        dest: /etc/sysctl.d/99-kernel-hardening.conf  # Path to sysctl config file
+        content: |
+          kernel.kptr_restrict = 2  # Restrict kernel pointer visibility
+          kernel.dmesg_restrict = 1  # Restrict dmesg output to privileged users only
+
+    # Configure network hardening parameters (e.g., disabling source routing, restricting redirects)
+    - name: Network hardening parameters
+      copy:
+        dest: /etc/sysctl.d/99-network-hardening.conf  # Path to sysctl config file
+        content: |
+          net.ipv4.tcp_syncookies = 1  # Enable TCP SYN cookies to protect against SYN flood attacks

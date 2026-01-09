@@ -1,0 +1,124 @@
+---
+- name: Harden PostgreSQL Server
+  hosts: clients  # Define the target hosts for this playbook (group 'clients')
+  become: yes  # Escalate to root privileges to perform system-level tasks
+  vars_prompt:
+    # Prompt the user for PostgreSQL bind IP
+    - name: "bind_ip"
+      prompt: "Enter the PostgreSQL bind IP"
+      private: no  # This is not a sensitive value, so it won't be hidden in terminal output
+    # Prompt the user for the password of the PostgreSQL user 'ansible'
+    - name: "ansible_pg_password"
+      prompt: "Enter the Ansible PostgreSQL user password"
+      private: yes  # This is sensitive, so the terminal will mask the input
+
+  tasks:
+
+    # Install PostgreSQL and related packages
+    - name: Ensure PostgreSQL is installed
+      apt:
+        name:
+          - postgresql  # PostgreSQL database package
+          - postgresql-contrib  # Additional PostgreSQL packages
+        state: present  # Ensure the packages are installed
+        update_cache: yes  # Update the apt package cache before installing
+
+    # Install ACL package to manage filesystem ACLs (Access Control Lists)
+    - name: Ensure ACL package is installed
+      apt:
+        name: acl
+        state: present  # Ensure ACL package is installed
+      become: yes  # Run this as root (required to install packages)
+
+    # Ensure the PostgreSQL service is started and enabled to start on boot
+    - name: Ensure PostgreSQL service is running
+      service:
+        name: postgresql  # Service name
+        state: started  # Ensure the service is running
+        enabled: yes  # Ensure the service is enabled to start on boot
+
+    # Run a command to get the PostgreSQL version
+    - name: Find PostgreSQL version
+      command: psql -V  # Command to get the version of PostgreSQL
+      register: pg_version  # Register the output of this command for use in later tasks
+      changed_when: false  # Mark as not 'changed' (so it won't trigger unnecessary reruns)
+
+    # Extract the major version number from the PostgreSQL version string
+    - name: Set version fact
+      set_fact:
+        pg_version_number: "{{ pg_version.stdout.split(' ')[2].split('.')[0] }}"  # Get the major version number from the version string
+
+    # Ensure that the main directory for PostgreSQL exists with correct ownership and permissions
+    - name: Ensure PostgreSQL main directory exists
+      file:
+        path: "/etc/postgresql/{{ pg_version_number }}/main"  # Path to the main PostgreSQL directory
+        state: directory  # Ensure this is a directory
+        owner: postgres  # Ownership set to 'postgres' user
+        group: postgres  # Group ownership set to 'postgres' group
+        mode: '0755'  # Set directory permissions to allow read/write/execute for owner, and read/execute for others
+
+    # Configure PostgreSQL settings (adjust the configuration file for specific hardening settings)
+    - name: Configure PostgreSQL settings
+      blockinfile:
+        path: "/etc/postgresql/{{ pg_version_number }}/main/postgresql.conf"  # Path to the PostgreSQL configuration file
+        block: |
+          listen_addresses = '{{ bind_ip }}'  # Set the PostgreSQL bind IP address from the user input
+          max_connections = 30  # Set the maximum number of allowed connections
+          superuser_reserved_connections = 3  # Reserve 3 connections for superusers
+          log_destination = 'stderr'  # Log to stderr
+          logging_collector = on  # Enable the logging collector
+          log_directory = '/var/log/postgresql'  # Log directory path
+          log_filename = 'postgresql.log'  # Log file name
+          log_min_duration_statement = 1000  # Log queries that take longer than 1000ms
+          statement_timeout = 300000  # Timeout for queries in milliseconds (5 minutes)
+          idle_in_transaction_session_timeout = 300000  # Timeout for idle transactions (5 minutes)
+        owner: postgres  # Set the ownership of the configuration file
+        group: postgres  # Set the group ownership of the configuration file
+        mode: '0644'  # Set permissions for the configuration file (readable by all, writable by owner)
+      notify: Restart PostgreSQL  # Notify the handler to restart PostgreSQL after the configuration changes
+
+    # Ensure the log directory for PostgreSQL exists and has the correct ownership and permissions
+    - name: Ensure PostgreSQL log directory exists
+      file:
+        path: /var/log/postgresql  # Path to the PostgreSQL log directory
+        state: directory  # Ensure this is a directory
+        owner: postgres  # Ownership set to 'postgres' user
+        group: postgres  # Group ownership set to 'postgres' group
+        mode: '0755'  # Set permissions to allow read/write/execute for owner, and read/execute for others
+
+    # Ensure the PostgreSQL Python library is installed for interacting with PostgreSQL from Python
+    - name: Ensure PostgreSQL Python library is installed
+      apt:
+        name: python3-psycopg2  # PostgreSQL Python adapter
+        state: present  # Ensure the package is installed
+        update_cache: yes  # Update the apt package cache before installing
+      become: yes  # Run this as root
+
+    # Ensure that the Ansible PostgreSQL user exists in the database with the provided password
+    - name: Ensure Ansible PostgreSQL user exists
+      community.postgresql.postgresql_user:
+        name: ansible  # Create a user named 'ansible'
+        password: "{{ ansible_pg_password }}"  # Set the password from the prompt
+        db: postgres  # Ensure the user is created in the 'postgres' database
+        role_attr_flags: LOGIN,SUPERUSER  # Grant LOGIN and SUPERUSER privileges
+        state: present  # Ensure the user exists
+      become: yes  # Run this task as root
+      become_user: postgres  # Run this task as the 'postgres' user
+      vars:
+        ansible_remote_tmp: /tmp/.ansible/tmp  # Temporary directory for Ansible to store files during playbook execution
+
+    # Update the pg_hba.conf file to enable password authentication for local connections
+    - name: Ensure password authentication is enabled
+      lineinfile:
+        path: "/etc/postgresql/{{ pg_version_number }}/main/pg_hba.conf"  # Path to the pg_hba.conf file
+        regexp: '^local\s+all\s+all\s+'  # Match the line for local all users
+        line: 'local   all   all   md5'  # Change to use 'md5' password authentication
+        backup: yes  # Backup the file before modifying it
+      notify: Restart PostgreSQL  # Notify the handler to restart PostgreSQL after modifying the configuration file
+
+  handlers:
+    # Handler to restart PostgreSQL service when notified
+    - name: Restart PostgreSQL
+      service:
+        name: postgresql  # PostgreSQL service name
+        state: restarted  # Restart the service

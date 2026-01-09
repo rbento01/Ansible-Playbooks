@@ -1,0 +1,133 @@
+---
+- name: Manage VMs in Proxmox
+  hosts: localhost                  # Runs locally on the Ansible server
+  connection: local                  # Local connection (no SSH)
+  gather_facts: no                   # No need to gather system facts
+
+  vars:
+    ansible_python_interpreter: "/home/ansible/ansible-venv/bin/python"  # Use Python from virtualenv
+    api_host: "172.16.30.149"       # Proxmox server IP
+    api_user: "root@pam"            # Proxmox API user
+    api_token_id: "ansible"         # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+    node: "pve"                     # Proxmox node where VM will be created
+  
+  vars_prompt:                        # Interactive user prompts
+    - name: "vm_id"
+      prompt: "What will be the VM ID? (Between 100 and 999999). If empty, the first available ID will be used"
+      private: no
+
+    - name: "vm_name"
+      prompt: "What will be the VM name?"   # VM name
+      private: no
+
+    - name: "vm_memory"
+      prompt: "Amount of RAM (MB)?"         # Memory in MB
+      private: no
+      default: "2048"
+
+    - name: "vm_disk"
+      prompt: "Disk size (GB)?"             # Disk size in GB
+      private: no
+      default: "16"
+
+    - name: "vm_cores"
+      prompt: "Number of CPU cores?"        # CPU cores
+      private: no
+      default: "1"
+
+    - name: "vm_sockets"
+      prompt: "Number of CPU sockets?"      # CPU sockets
+      private: no
+      default: "1"
+
+    - name: "vm_iso"
+      prompt: "Path to ISO on Proxmox (e.g., local:iso/ubuntu-24.04.iso)?"  # ISO path
+      private: no
+      default: "local:iso/ubuntu-24.04.iso"
+
+    - name: "vlan_bridge"
+      prompt: "Which VLAN bridge?"          # VLAN bridge
+      private: no
+      default: "vmbr0"
+
+  tasks:
+    - name: Get VM list via Proxmox API
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/cluster/resources?type=vm"  # API endpoint to list VMs
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # API authentication
+        validate_certs: no                          # Skip SSL validation (self-signed certs)
+      register: vms_response                        # Store response for later use
+
+    - name: Calculate first available VMID if user didn’t specify
+      # range(100, 999999) |                # Generate range of valid VMIDs
+      # difference(vms_response.json.data | map(attribute='vmid') | list)  # Remove already used IDs
+      # )[0]                                    # Take the first free one
+      set_fact:
+        vm_id: >-
+          {{ 
+            (
+              (
+                range(100, 999999) |                
+                difference(vms_response.json.data | map(attribute='vmid') | list)  
+              ) | list
+            )[0]                                    
+          }}
+      when: vm_id | length == 0                     # Only run if no VMID was provided
+
+    - name: Show automatically selected VMID
+      debug:
+        msg: "Chosen VMID: {{ vm_id }}"             # Display selected VMID
+
+    - name: Check if VMID already exists
+      community.general.proxmox_kvm:
+        api_user: "{{ api_user }}"                  # Proxmox API user
+        api_token_id: "{{ api_token_id }}"          # API token ID
+        api_token_secret: "{{ api_token }}"         # API token secret
+        api_host: "{{ api_host }}"                  # Proxmox host
+        node: "{{ node }}"                          # Proxmox node
+        vmid: "{{ vm_id | int }}"                   # VMID to check
+        state: current                              # Query VM state (doesn’t create/modify)
+      register: vm_check                            # Save result
+      ignore_errors: yes                            # Ignore errors if VM doesn’t exist
+
+    - name: Stop playbook if VMID already exists
+      assert:
+        that:
+          - vm_check.failed                         # Ensure previous task failed (VM doesn’t exist)
+        fail_msg: "Error: This VMID already exists! Choose another one."  # Error message
+
+    - name: Create new VM
+      community.general.proxmox_kvm:                # Manage KVM VMs in Proxmox
+        api_host: "{{ api_host }}"                  # Proxmox host
+        api_user: "{{ api_user }}"                  # API user
+        api_token_id: "{{ api_token_id }}"          # API token ID
+        api_token_secret: "{{ api_token }}"         # API token secret
+        node: "{{ node }}"                          # Proxmox node
+        vmid: "{{ vm_id | int }}"                   # VMID
+        name: "{{ vm_name }}"                       # VM name
+        memory: "{{ vm_memory | int }}"             # RAM
+        cores: "{{ vm_cores | int }}"               # CPU cores
+        sockets: "{{ vm_sockets | int }}"           # CPU sockets
+        scsihw: virtio-scsi-pci                     # SCSI controller
+        ide:
+          ide2: "{{ vm_iso }},media=cdrom"          # ISO as CD-ROM
+        sata:
+          sata0: "local-lvm:{{ vm_disk | int }}"    # Main disk
+        net:
+          net0: "virtio,bridge={{ vlan_bridge }}"   # Network config
+        ostype: l26                                 # Linux OS type
+        kvm: no                                     # Disable KVM (for nested Proxmox)
+        state: present                              # Ensure VM exists
+
+    - name: Ensure VM is powered on
+      community.general.proxmox_kvm:                # Start the VM
+        api_host: "{{ api_host }}"                  # Proxmox host
+        api_user: "{{ api_user }}"                  # API user
+        api_token_id: "{{ api_token_id }}"          # API token ID
+        api_token_secret: "{{ api_token }}"         # API token secret
+        node: "{{ node }}"                          # Proxmox node
+        vmid: "{{ vm_id | int }}"                   # VMID
+        state: started                              # Ensure VM is running

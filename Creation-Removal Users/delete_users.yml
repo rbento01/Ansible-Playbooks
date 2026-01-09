@@ -1,0 +1,47 @@
+---
+- name: Remove Proxmox user via API   # Playbook name, describes the purpose
+  hosts: localhost                    # Run only on the local machine
+  connection: local                   # Use local connection, no SSH
+  gather_facts: no                    # Skip gathering system facts (not needed)
+
+  vars:
+    api_host: "172.16.30.149"         # IP address of the Proxmox server
+    api_user: "root@pam"              # Proxmox administrator user
+    api_token_id: "ansible"           # API token ID created in Proxmox
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"   # Secret API token value
+
+  vars_prompt:
+    - name: "username"                # Variable name to store user input
+      prompt: "Enter the username to remove (e.g., user1@pve)"  # Message shown to the user
+      private: no                     # Input is visible when typed
+
+  tasks:
+    - name: Check if the user exists  # Task: verify if the given user exists in Proxmox
+      uri:                            # Use the "uri" module to send an HTTP request
+        url: "https://{{ api_host }}:8006/api2/json/access/users/{{ username }}"  # Proxmox API endpoint to check user
+        method: GET                   # HTTP GET request (read user info)
+        headers:                      # Add headers for authentication
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Auth header with API token
+        validate_certs: no            # Do not validate SSL certificates (useful for self-signed certs)
+      register: check_user            # Save the response in a variable called "check_user"
+      failed_when: false              # Do not mark the task as failed even if the user does not exist
+
+    - name: Remove the user if it exists  # Task: delete the user if found
+      uri:                               # Use the "uri" module to send an HTTP request
+        url: "https://{{ api_host }}:8006/api2/json/access/users/{{ username }}"  # Proxmox API endpoint to delete user
+        method: DELETE                  # HTTP DELETE request (remove user)
+        headers:                        # Add headers for authentication
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Auth header with API token
+        validate_certs: no              # Do not validate SSL certificates
+      when: check_user.status == 200    # Only run if the user exists (HTTP 200 OK)
+      register: delete_response         # Save the response of the delete request
+
+    - name: User was not found          # Task: show message if user doesn’t exist
+      debug:                            # Use "debug" to print a message
+        msg: "The user {{ username }} does not exist."  # Message to display
+      when: check_user.status != 200    # Run this if the user was not found
+
+    - name: Confirm user removal        # Task: confirm successful deletion
+      debug:                            # Use "debug" to print a message
+        msg: "User {{ username }} successfully removed!"  # Success message
+      when: check_user.status == 200    # Run this only if user existed and was removed

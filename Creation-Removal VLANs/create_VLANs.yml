@@ -1,0 +1,82 @@
+- name: Create Linux Bridges on Proxmox                   # Playbook name: Create Linux bridges on a Proxmox node
+  hosts: localhost                                        # Run locally on the control machine
+  connection: local                                       # Local connection (no SSH)
+  gather_facts: no                                        # Skip fact gathering to speed up execution
+
+  vars:                                                   # Define API and node variables
+    api_host: "172.16.30.149"                             # Proxmox server IP
+    api_user: "root@pam"                                  # Proxmox API user
+    api_token_id: "ansible"                               # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"    # API token secret
+    node: "pve"                                           # Target Proxmox node
+
+  vars_prompt:                                            # Prompt user for bridge configuration
+    - name: bridge_name
+      prompt: "Enter the bridge name (e.g., vmbr1)"      # Name of the new bridge
+      private: no
+
+    - name: bridge_ip
+      prompt: "Enter the bridge IP address (leave blank for no IP)"  # Optional IP address
+      private: no
+      default: ""
+
+    - name: bridge_cidr
+      prompt: "Enter the CIDR/mask (e.g., 24 for 255.255.255.0, leave blank if no IP)"  # Subnet mask
+      private: no
+      default: ""
+
+    - name: bridge_gateway
+      prompt: "Enter the gateway (leave blank if none)"  # Optional gateway
+      private: no
+      default: ""
+
+    - name: bridge_comment
+      prompt: "Enter a comment/description for the bridge (optional)"  # Optional comment
+      private: no
+      default: ""
+
+  tasks:
+    - name: Get current network interfaces               # Task: retrieve existing network interfaces on the node
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ node }}/network"  # API endpoint for network config
+        method: GET                                      # HTTP GET request
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authenticate via API token
+        validate_certs: no                               # Skip SSL validation
+      register: network_interfaces                        # Store API response in a variable
+
+    - name: Fail if bridge already exists                 # Task: prevent creating a duplicate bridge
+      fail:
+        msg: "Bridge {{ bridge_name }} already exists on node {{ node }}!"  # Error message
+      when: bridge_name in network_interfaces.json.data | map(attribute='iface') | list  # Check existing interfaces
+
+    - name: Build bridge body                              # Task: construct JSON body for the bridge creation
+      set_fact:
+        bridge_body: >-
+          {{
+            {
+              "iface": bridge_name,                       # Bridge interface name
+              "type": "bridge",                           # Set type to bridge
+              "autostart": true                            # Enable autostart on boot
+            }
+            | combine(
+                (bridge_ip | default('') | trim != '' and bridge_cidr | default('') | trim != '') 
+                | ternary({"address": bridge_ip ~ "/" ~ bridge_cidr}, {})  # Include IP/CIDR if provided
+              )
+            | combine(
+                (bridge_gateway | default('') | trim != '') 
+                | ternary({"gateway": bridge_gateway}, {})  # Include gateway if provided
+              )
+          }}
+
+    - name: Create Linux bridge                             # Task: send API request to create the bridge
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ node }}/network"  # API endpoint
+        method: POST                                      # HTTP POST to create
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authenticate
+        validate_certs: no                               # Skip SSL verification
+        body_format: json                                # JSON body format
+        body: "{{ bridge_body }}"                        # Use the JSON body created above
+      register: create_bridge_response                    # Save the API response
+      failed_when: create_bridge_response.status not in [200, 201]  # Fail if creation unsuccessful

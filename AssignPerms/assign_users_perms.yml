@@ -1,0 +1,96 @@
+- name: Assign a Proxmox role to a user  # Playbook name: assign a role to a Proxmox user
+  hosts: localhost                        # Run locally on the Ansible control machine
+  connection: local                       # Use local connection (no SSH)
+  gather_facts: no                        # Skip gathering system facts
+
+  vars:                                   # Variables used in the playbook
+    api_host: "172.16.30.149"            # Proxmox server IP
+    api_user: "root@pam"                 # Proxmox API user
+    api_token_id: "ansible"              # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+    role_map:                             # Mapping of numeric choices to Proxmox roles
+      "1": "NoAccess"
+      "2": "PVEAdmin"
+      "3": "PVEAuditor"
+      "4": "PVEDatastoreAdmin"
+      "5": "PVEDatastoreUser"
+      "6": "PVEMappingAdmin"
+      "7": "PVEMappingUser"
+      "8": "PVEPoolAdmin"
+      "9": "PVEPoolUser"
+      "10": "PVESDNAdmin"
+      "11": "PVESDNUser"
+      "12": "PVESysAdmin"
+      "13": "PVETemplateUser"
+      "14": "PVEUserAdmin"
+      "15": "PVEVMAdmin"
+      "16": "PVEVMUser"
+
+  vars_prompt:                            # Prompt user for input at runtime
+    - name: "target_user"
+      prompt: "Enter the Proxmox username to assign permissions (e.g., user1@pve)"  # Ask for target user
+      private: no
+
+    - name: "role_choice"
+      prompt: |                             # Ask user to select role by number
+        Select the role to assign (write only the number):
+        1 -> NoAccess
+        2 -> PVEAdmin
+        3 -> PVEAuditor
+        4 -> PVEDatastoreAdmin
+        5 -> PVEDatastoreUser
+        6 -> PVEMappingAdmin
+        7 -> PVEMappingUser
+        8 -> PVEPoolAdmin
+        9 -> PVEPoolUser
+        10 -> PVESDNAdmin
+        11 -> PVESDNUser
+        12 -> PVESysAdmin
+        13 -> PVETemplateUser
+        14 -> PVEUserAdmin
+        15 -> PVEVMAdmin
+        16 -> PVEVMUser
+      private: no
+
+    - name: "target_path"
+      prompt: "Enter the path where the permission should be applied (e.g., /)"  # Ask for ACL path
+      private: no
+      default: "/"                 # Default path is root
+
+  tasks:
+    - name: Map role selection to actual role name
+      set_fact:
+        roleid: "{{ role_map[role_choice | string] }}"  # Convert numeric choice to actual Proxmox role
+
+    - name: Assign the selected role to the user at the specified path
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/acl/"  # Proxmox API endpoint to modify ACLs
+        method: PUT                                                # Use HTTP PUT to create/update ACL
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # API token auth
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          path: "{{ target_path }}"       # Path where permission is applied
+          users:
+            - "{{ target_user }}"         # Target Proxmox user
+          roles:
+            - "{{ roleid }}"              # Role to assign
+          propagate: 1                    # Propagate permissions to sub-paths
+        validate_certs: no                # Skip SSL certificate validation
+      register: assign_perm_response       # Save API response for debugging
+
+    - name: Get current ACLs to confirm assignment
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/acl"  # API endpoint to list all ACLs
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # API auth
+        validate_certs: no
+        return_content: yes            # Ensure the response content is returned
+      register: acl_check              # Save ACL list for verification
+
+    - name: Show ACL entries for the target user
+      debug:
+        msg: "{{ item }}"              # Print each ACL entry for the selected user
+      loop: "{{ acl_check.json.data | selectattr('ugid', 'equalto', target_user) | list }}"  # Filter ACLs for user

@@ -1,0 +1,74 @@
+---
+- name: Create users in Proxmox via API URL   # Playbook to create new users in Proxmox
+  hosts: localhost                           # Run locally on the Ansible controller
+  connection: local                          # Use local connection (no SSH needed)
+  gather_facts: no                           # Skip system facts gathering
+
+  vars:                                      # API access variables
+    api_host: "172.16.30.149"                # Proxmox server IP
+    api_user: "root@pam"                     # Proxmox API user
+    api_token_id: "ansible"                  # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+
+  vars_prompt:                               # Interactive prompts for user data
+    - name: "username"
+      prompt: "Enter the username (e.g., user1@pve)"   # Proxmox usernames must include realm (@pve, @pam, etc.)
+      private: no
+
+    - name: "password"
+      prompt: "Enter the password"           # User password
+      private: yes                           # Keep password hidden in terminal
+
+    - name: "first_name"
+      prompt: "First name"                   # User’s first name
+      private: no
+      default: ""                            # Default to empty if not provided
+
+    - name: "last_name"
+      prompt: "Last name"                    # User’s last name
+      private: no
+      default: ""                            # Default to empty if not provided
+
+    - name: "email"
+      prompt: "User email"                   # User’s email address
+      private: no
+      default: ""                            # Default to empty if not provided
+
+    - name: "comment"
+      prompt: "Comment / User description"   # Optional description for the user
+      private: no
+      default: ""                            # Default to empty if not provided
+
+  tasks:
+    - name: Create user in Proxmox
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/users"  # API endpoint to create users
+        method: POST                         # HTTP POST request to create
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authentication
+        validate_certs: no                   # Skip SSL validation (self-signed certs)
+        body_format: json                    # Send body as JSON
+        body:
+          userid: "{{ username }}"           # Proxmox user ID (with realm)
+          password: "{{ password }}"         # Password for the account
+          firstname: "{{ first_name }}"      # First name
+          lastname: "{{ last_name }}"        # Last name
+          email: "{{ email }}"               # Email
+          comment: "{{ comment }}"           # Comment/description
+          enable: true                       # Enable the account
+      register: create_user_response         # Store API response
+      failed_when: create_user_response.status not in [200, 201]  # Fail if not successful
+
+    - name: Verify if user exists in Proxmox
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/users/{{ username }}"  # API endpoint for specific user
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authentication
+        validate_certs: no
+      register: check_user_response          # Store API response
+      failed_when: check_user_response.status != 200  # Fail if user not found
+
+    - name: Show user status
+      debug:
+        var: check_user_response.json        # Print full API response with user details

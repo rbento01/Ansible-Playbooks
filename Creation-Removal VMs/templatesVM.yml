@@ -1,0 +1,119 @@
+---
+- name: Create Ubuntu VM with Templates  # Playbook name: Create Ubuntu VMs using templates
+  hosts: localhost                      # Run locally on the control machine
+  connection: local                     # Use local connection (no SSH)
+  gather_facts: no                      # Skip gathering facts to speed up execution
+
+  vars:                                 # Variables used in the playbook
+    ansible_python_interpreter: "/home/ansible/ansible-venv/bin/python"  # Use Python from virtualenv
+    api_host: "172.16.30.149"           # Proxmox server IP
+    api_user: "root@pam"                # Proxmox API user
+    api_token_id: "ansible"             # Token ID for API authentication
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # Token secret
+    node: "pve"                         # Target Proxmox node name
+    default_iso: "local:iso/ubuntu-24.04.iso"  # Default ISO for VM installation
+    default_bridge: "vmbr0"             # Default network bridge for VM
+
+    templates:                          # Predefined VM templates with resources
+      - name: "Template 1"
+        ram: 2048
+        disk: 16
+        cores: 1
+      - name: "Template 2"
+        ram: 4096
+        disk: 32
+        cores: 2
+      - name: "Template 3"
+        ram: 8192
+        disk: 64
+        cores: 3
+
+  vars_prompt:                          # Prompt user for input at runtime
+    - name: "vm_id"
+      prompt: "What will be the VM ID? (first available)"  # Ask for VMID
+      private: no
+      default: ""                       # Leave empty to auto-calculate
+
+    - name: "vm_name"
+      prompt: "What will be the VM name?"  # Ask for VM name
+      private: no
+
+    - name: "template_choice"
+      prompt: |                          # Ask user to choose template
+        Choose the desired template (type the number):
+
+          Template 1  |  Template 2  |  Template 3
+        RAM: 2048 MB  | RAM: 4096 MB | RAM: 8192 MB
+        Disk: 16 GB   | Disk: 32 GB  | Disk: 64 GB
+        Cores: 1      | Cores: 2     | Cores: 3
+        ISO: Ubuntu Server 24.04 | VLAN: vmbr0
+      private: no
+
+  tasks:
+    - name: Validate template choice
+      set_fact:
+        selected_template: "{{ templates[(template_choice | int) - 1] }}"  # Map choice to template
+      failed_when: template_choice | int not in [1,2,3]  # Fail if invalid choice
+
+    - name: Get list of VMs via Proxmox API
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/cluster/resources?type=vm"  # Proxmox API endpoint
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # Authenticate
+        validate_certs: no              # Skip SSL validation (self-signed certs)
+      register: vms_response            # Store API response
+
+    - name: Calculate first available VMID if user did not specify one
+      # range(100, 999999) |                                  # VMIDs range
+      # difference(vms_response.json.data | map(attribute='vmid') | list)  # Remove used IDs
+      #  )[0]  # Pick first free VMID
+      set_fact:
+        vm_id: >-
+          {{
+            (
+              (
+                range(100, 999999) |                                  
+                difference(vms_response.json.data | map(attribute='vmid') | list)  
+              ) | list
+            )[0]  
+          }}
+      when: vm_id | length == 0         # Only if user left VMID empty
+
+    - name: Show the automatically chosen VMID
+      debug:
+        msg: "Chosen VMID: {{ vm_id }}"  # Display selected VMID
+
+    - name: Create VM based on the chosen template
+      community.general.proxmox_kvm:
+        api_user: "{{ api_user }}"               # Proxmox API user
+        api_token_id: "{{ api_token_id }}"       # Token ID
+        api_token_secret: "{{ api_token }}"      # Token secret
+        api_host: "{{ api_host }}"               # Proxmox server
+        node: "{{ node }}"                       # Target node
+        vmid: "{{ vm_id | int }}"                # VMID to create
+        name: "{{ vm_name }}"                    # VM name
+        memory: "{{ selected_template.ram }}"    # RAM from template
+        cores: "{{ selected_template.cores }}"   # CPU cores from template
+        sockets: 1                               # CPU sockets
+        scsihw: virtio-scsi-pci                  # SCSI controller type
+        scsi:
+          scsi0: "local-lvm:{{ selected_template.disk }}"  # Disk allocation
+        bootdisk: scsi0                           # Set boot disk
+        ide:
+          ide2: "{{ default_iso }},media=cdrom"   # Attach ISO
+        net:
+          net0: "virtio,bridge={{ default_bridge }}"  # Network config
+        ostype: l26                               # Linux OS type
+        kvm: no                                   # Disable nested KVM
+        state: present                            # Ensure VM exists
+
+    - name: Ensure the VM is running
+      community.general.proxmox_kvm:
+        api_user: "{{ api_user }}"                # API user
+        api_token_id: "{{ api_token_id }}"        # Token ID
+        api_token_secret: "{{ api_token }}"       # Token secret
+        api_host: "{{ api_host }}"                # Proxmox host
+        node: "{{ node }}"                        # Node name
+        vmid: "{{ vm_id | int }}"                 # VMID
+        state: started                            # Ensure VM is running

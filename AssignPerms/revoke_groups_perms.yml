@@ -1,0 +1,72 @@
+- name: Revoke a Proxmox role from a group  # Playbook name: revoke roles from a Proxmox group
+  hosts: localhost                          # Run locally on the Ansible control machine
+  connection: local                         # Use local connection (no SSH)
+  gather_facts: no                          # Skip gathering system facts
+
+  vars:                                     # Variables used in the playbook
+    api_host: "172.16.30.149"              # Proxmox server IP
+    api_user: "root@pam"                   # Proxmox API user
+    api_token_id: "ansible"                # API token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # API token secret
+
+  vars_prompt:                              # Prompt user for input at runtime
+    - name: "target_group"
+      prompt: "Enter the Proxmox group to revoke permissions (e.g., group1@pve)"  # Ask for group name
+      private: no
+
+    - name: "target_path"
+      prompt: "Enter the path where the permission should be revoked (e.g., /)"  # Ask for ACL path
+      private: no
+      default: "/"                   # Default path is root
+
+  tasks:
+    - name: Get ACL entries for the target group
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/acl"  # Proxmox API endpoint to list all ACLs
+        method: GET                                              # HTTP GET request
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # API token auth
+        validate_certs: no                                      # Skip SSL certificate validation
+        return_content: yes                                     # Return full response content
+      register: acl_check                                        # Store ACL list for further processing
+
+    - name: Set roles to remove for the group
+      # | selectattr('ugid', 'equalto', target_group)       # Filter ACL entries for the target group
+      # | selectattr('path', 'equalto', target_path)        # Filter ACL entries for the target path
+      # | map(attribute='roleid')                           # Extract the role IDs
+      # | list                                              # Convert to a list
+      set_fact:
+        group_roles_to_remove: >-                                # Create a variable with roles to remove
+          {{
+            acl_check.json.data
+            | selectattr('ugid', 'equalto', target_group)       
+            | selectattr('path', 'equalto', target_path)        
+            | map(attribute='roleid')                           
+            | list                                               
+          }}
+
+    - name: Remove all roles for the group at the path
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/acl/"  # Proxmox API endpoint to modify ACLs
+        method: PUT                                               # Use PUT to update ACL entries
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"  # API token auth
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          path: "{{ target_path }}"       # Path where permissions should be revoked
+          groups:
+            - "{{ target_group }}"        # Target group
+          roles: "{{ item }}"             # Role to revoke (looped over all roles)
+          delete: 1                       # Delete the role assignment
+        validate_certs: no                 # Skip SSL certificate validation
+      loop: "{{ group_roles_to_remove }}"   # Loop over all roles to revoke
+      when: group_roles_to_remove | length > 0  # Only run if there are roles to remove
+      register: revoke_results               # Store API responses for verification
+
+    - name: Permission revocation result
+      debug:
+        msg: >-                             
+          {% if revoke_results is skipped %}Group '{{ target_group }}' does not exist or had no permissions at '{{ target_path }}'.
+          {% else %}Permissions successfully revoked for group '{{ target_group }}' at path '{{ target_path }}'.
+          {% endif %}

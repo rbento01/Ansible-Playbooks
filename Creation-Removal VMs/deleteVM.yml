@@ -1,0 +1,60 @@
+---
+- name: Delete VMs with comma or range
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    api_host: "172.16.30.149"
+    api_user: "root@pam"
+    api_token_id: "ansible"
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"
+    node_name: "pve"
+
+  vars_prompt:
+    - name: "vm_input"
+      prompt: "Enter VM IDs to delete (comma-separated or range with colon, e.g., 100, 101:105, 110)"
+      private: no
+
+  tasks:
+    - name: Parse VM IDs into a list
+      set_fact:
+        vm_list: >-
+          {%- set result = [] -%}
+          {%- for part in vm_input.split(',') -%}
+            {%- set part = part | trim -%}
+            {%- if ':' in part -%}
+              {%- set bounds = part.split(':') -%}
+              {%- for i in range(bounds[0]|int, bounds[1]|int + 1) -%}
+                {%- set _ = result.append(i|string) -%}
+              {%- endfor -%}
+            {%- else -%}
+              {%- set _ = result.append(part) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ result }}
+
+    - name: Delete each VM
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ node_name }}/qemu/{{ item }}"
+        method: DELETE
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token }}"
+        validate_certs: no
+      loop: "{{ vm_list }}"
+      register: delete_group_response
+      ignore_errors: yes
+
+    - name: Show deletion results                          # Task: display the deletion results
+      # {% for res in delete_group_response.results %}  # Loop over each result in delete_group_response
+      # {% if res.failed %}                           # If deletion failed
+      # {% else %}                                    # If deletion succeeded
+      debug:
+        msg: >-                                           # Multiline message using Jinja2
+          {% for res in delete_group_response.results %}  
+            {% if res.failed %}                           
+              VM '{{ res.item }}' could not be deleted (does not exist or insufficient permissions).
+            {% else %}                                    
+              VM '{{ res.item }}' successfully deleted.
+            {% endif %}
+          {% endfor %}

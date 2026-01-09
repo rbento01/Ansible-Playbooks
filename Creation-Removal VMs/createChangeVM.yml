@@ -1,0 +1,62 @@
+---
+- name: Manage VMs in Proxmox    # Playbook name shown in Ansible output
+  hosts: localhost               # Run on localhost (the Ansible control node)
+  connection: local              # Use local connection (no SSH needed)
+  gather_facts: no               # Do not collect system facts
+
+  vars:
+    ansible_python_interpreter: "/home/ansible/ansible-venv/bin/python"  # Use Python from virtualenv
+    api_host: "172.16.30.149"   # Proxmox server IP
+    api_user: "root@pam"        # Proxmox user
+    api_token_id: "ansible"     # Token ID
+    api_token: "a0bccc34-3410-4b26-ba61-3dd9e06ef3e6"  # Token secret
+    node: "pve"                 # Proxmox node name
+    vmid: 110                   # VM ID to be managed
+    vlan_tag: 20                # VLAN tag for the VM network
+
+  tasks:
+    - name: Create new VM
+      community.general.proxmox_kvm:
+        api_host: "{{ api_host }}"          # Connect to Proxmox API
+        api_user: "{{ api_user }}"          # Authentication: user
+        api_token_id: "{{ api_token_id }}"  # Authentication: token ID
+        api_token_secret: "{{ api_token }}" # Authentication: token secret
+        node: "{{ node }}"                  # Target node for VM creation
+        vmid: "{{ vmid }}"                  # Unique VM ID
+        name: "vm-ansible-demo"             # Name of the new VM
+        memory: 2048                        # Allocate 2 GB RAM
+        cores: 1                            # Allocate 1 CPU core
+        sockets: 1                          # Allocate 1 socket
+        scsihw: virtio-scsi-pci             # Use VirtIO SCSI controller
+        ide:
+          ide2: "local:iso/ubuntu-24.04.iso,media=cdrom"   # Attach ISO as CD-ROM
+        sata:
+          sata0: "local-lvm:32"             # Create 32 GB disk on local-lvm
+        net:
+          net0: "virtio,bridge=vmbr0,tag={{ vlan_tag }}"   # Attach NIC with VLAN
+        ostype: l26                         # Linux OS type
+        kvm: no                             # Disable KVM (needed for nested Proxmox)
+        state: present                      # Ensure VM exists
+
+    - name: Update VM settings (e.g., more memory)
+      community.general.proxmox_kvm:
+        api_host: "{{ api_host }}"          # Proxmox API host
+        api_user: "{{ api_user }}"          # Proxmox API user
+        api_token_id: "{{ api_token_id }}"  # Token ID
+        api_token_secret: "{{ api_token }}" # Token secret
+        node: "{{ node }}"                  # Proxmox node
+        vmid: "{{ vmid }}"                  # VM to update
+        memory: 4096                        # Change RAM to 4 GB
+        cores: 4                            # Change to 4 CPU cores
+        update: true                        # Ensure update is applied
+        state: present                      # VM must still exist
+
+    - name: Ensure VM is running
+      community.general.proxmox_kvm:
+        api_host: "{{ api_host }}"          # Proxmox API host
+        api_user: "{{ api_user }}"          # API user
+        api_token_id: "{{ api_token_id }}"  # Token ID
+        api_token_secret: "{{ api_token }}" # Token secret
+        node: "{{ node }}"                  # Proxmox node
+        vmid: "{{ vmid }}"                  # VM to start
+        state: started                      # Ensure VM is powered on
